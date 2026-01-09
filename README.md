@@ -40,7 +40,7 @@ This project bridges the gap between backend scripting and frontend usability. I
 
 1. Clone the repository:
    ```bash
-   git clone https://github.com/tanmaydeshpande/better-utils.git
+   git clone https://github.com/tanmay-deshpand3/better-utils
    cd better-utils
    ```
 
@@ -80,7 +80,3 @@ This project bridges the gap between backend scripting and frontend usability. I
 
 - **Backend**: The `main.py` entry point serves both the API and the static frontend assets.
 - **Frontend**: Source code is located in `frontend/src`. Run `npm run dev` in the `frontend` directory for a standalone development server.
-
-## License
-
-Copyright (c) 2024 Tanmay Deshpande. All rights reserved.
