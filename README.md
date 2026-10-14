@@ -40,7 +40,7 @@ This project bridges the gap between backend scripting and frontend usability. I
 
 1. Clone the repository:
    ```bash
-   git clone https://github.com/tanmay-deshpand3/better-utils
+   git clone https://github.com/tanmayd-dev/better-utils
    cd better-utils
    ```
 
