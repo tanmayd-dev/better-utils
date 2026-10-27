@@ -1,13 +1,26 @@
+import logging
+import os
+import sys
+from pathlib import Path
+
+# Make `core` importable regardless of the process working directory.
+PROJECT_ROOT = Path(__file__).resolve().parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+import uvicorn
 from fastapi import FastAPI, UploadFile, File, Form, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import Response
-import uvicorn
-import os
+
+from core.config import STATIC_DIR, TOOLS_DIR
 from core.registry import ToolRegistry
 from core.executor import execute_tool
 from core.watcher import start_watcher
 from core.tester import run_tests_for_tool
+
+logger = logging.getLogger("better_utils")
 
 app = FastAPI(title="Better Utils")
 
@@ -21,12 +34,15 @@ app.add_middleware(
 )
 
 # Registry
-TOOLS_DIR = os.path.join(os.getcwd(), "tools")
-registry = ToolRegistry(TOOLS_DIR)
+registry = ToolRegistry(str(TOOLS_DIR))
 registry.load_tools()
 
 # Watcher
-start_watcher(registry, TOOLS_DIR)
+start_watcher(registry, str(TOOLS_DIR))
+
+@app.get("/health")
+def health():
+    return {"status": "ok"}
 
 @app.get("/api/tools")
 def list_tools():
@@ -62,11 +78,20 @@ def test_tool(tool_id: str):
         
     return run_tests_for_tool(tool_def["path"])
 
-# Serve Frontend
-app.mount("/", StaticFiles(directory="frontend/dist", html=True), name="static")
+# Serve Frontend (mounted last so API routes take precedence).
+# The build is an optional artifact: a missing frontend/dist must not prevent
+# the API from starting.
+if STATIC_DIR.is_dir():
+    app.mount("/", StaticFiles(directory=str(STATIC_DIR), html=True), name="static")
+else:
+    logger.warning(
+        "Static frontend directory %s does not exist; serving API only. "
+        "Build it with `npm run build` in frontend/ or set "
+        "BETTER_UTILS_STATIC_DIR.",
+        STATIC_DIR,
+    )
 
 if __name__ == "__main__":
-    import sys
     # Redirect stdout/stderr to a log file if running without a console (e.g. via pythonw)
     if sys.stdout is None or sys.stderr is None:
         log_path = os.path.join(os.getcwd(), "app.log")

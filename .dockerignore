@@ -1,0 +1,15 @@
+.git
+.gitignore
+.dockerignore
+.pytest_cache
+__pycache__
+*.py[cod]
+*.log
+.env
+.venv
+venv
+env
+app.log
+frontend/node_modules
+frontend/dist
+README.md
