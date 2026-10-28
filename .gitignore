@@ -1,12 +1,31 @@
+Better Utils
+
 __pycache__/
 *.py[cod]
 *$py.class
 .pytest_cache/
+.ruff_cache/
+.venv/
 venv/
 env/
 .env
 app.log
 *.log
+dist/
+build/
+*.egg-info/
+
+# frontend
 frontend/node_modules/
 frontend/dist/
+
+# generated dashboard bundle (embedded at wheel-build time by scripts/build_ui.sh)
+better_utils/static/
+
 .DS_Store
+
+# repo-only agent notes
+AGENTS.md
+
+# dev lockfile from the uv run workflow (library: deps live in pyproject.toml)
+uv.lock

@@ -1,44 +1,28 @@
-# syntax=docker/dockerfile:1
-
-# ---- Frontend build ----
-FROM node:22-alpine AS frontend-build
-
-WORKDIR /app/frontend
-
-# The repository uses bun.lock; install with npm from package.json so the build
-# only needs the Node 22 toolchain.
-COPY frontend/package.json ./
-RUN npm install --no-audit --no-fund
-
+# Stage 1: build the React dashboard
+FROM node:22-alpine AS ui
+WORKDIR /build
+COPY frontend/package.json frontend/package-lock.json* ./
+RUN npm install --no-fund --no-audit
 COPY frontend/ ./
 RUN npm run build
 
-# ---- Runtime ----
-FROM python:3.11-slim AS runtime
+# Stage 2: build the wheel with the dashboard embedded
+FROM python:3.12-slim AS wheel
+WORKDIR /build
+COPY better_utils/ better_utils/
+COPY --from=ui /build/dist better_utils/static
+COPY pyproject.toml README.md ./
+RUN pip install --no-cache-dir build && python -m build -w -o dist
 
-ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1 \
-    PIP_NO_CACHE_DIR=1 \
-    BETTER_UTILS_TOOLS_DIR=/app/tools \
-    BETTER_UTILS_STATIC_DIR=/app/frontend/dist
-
+# Stage 3: runtime
+FROM python:3.12-slim
+RUN useradd --create-home --shell /usr/sbin/nologin bu
 WORKDIR /app
-
-RUN useradd --create-home --uid 10001 appuser
-
-COPY requirements.txt ./
-RUN pip install --no-cache-dir -r requirements.txt
-
-COPY --chown=appuser:appuser main.py ./
-COPY --chown=appuser:appuser core ./core
-COPY --chown=appuser:appuser tools ./tools
-COPY --chown=appuser:appuser --from=frontend-build /app/frontend/dist ./frontend/dist
-
-USER appuser
-
+COPY --from=wheel /build/dist/*.whl /tmp/
+RUN pip install --no-cache-dir /tmp/better_utils-*.whl && rm /tmp/better_utils-*.whl
+# The example app is a starting point; mount or bake your own project over /app.
+COPY example_app.py /app/
+COPY tools/ /app/tools/
+USER bu
 EXPOSE 8000
-
-HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
-    CMD ["python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2)"]
-
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["bu", "run", "example_app:app", "--host", "0.0.0.0", "--port", "8000"]

@@ -1,119 +1,201 @@
 # Better Utils
 
-Better Utils is a high-performance framework designed to instantly transform Python functions into interactive web user interfaces. By leveraging type hints and docstrings, it automatically generates type-safe, responsive forms, allowing developers to focus on logic rather than frontend boilerplate.
+Better Utils turns Python functions into a tool server with a dashboard. Type
+hints become form fields, docstrings become the documentation, and `bu run`
+serves everything: a JSON API (one endpoint per tool) plus a bundled React UI
+for running, testing, and inspecting tools in the browser.
 
-## Overview
+```python
+# app.py
+from better_utils import BetterUtils, Router
 
-This project bridges the gap between backend scripting and frontend usability. It parses Python function signatures to construct a dynamic registry of executable tools. A React-based frontend then renders these tools, offering a seamless experience for execution, testing, and hot-reloading.
+app = BetterUtils(title="My Utils")
 
-## Security Warning
+text = Router("text")
 
-> **The tool runner executes arbitrary Python code.** Any Python file placed in the tools directory is imported and run by the server, with the same permissions as the server process. There is no authentication, sandboxing, or resource limiting. Never expose Better Utils directly to the internet or to an untrusted network; run it on a trusted host and put authentication and network controls in front of it.
+@text.tool(name="Reverse Text")
+def reverse_string(text: str) -> str:
+    """Reverses the input text."""
+    return text[::-1]
 
-## Key Features
+app.include_router(text)
+```
 
-- **Automatic UI Generation**: Instantly converts function signatures (including complex types) into web forms.
-- **Dynamic Registry**: Automatically discovers and loads tools from the `tools/` directory.
-- **Hot Reloading**: Integrated file watcher reloads modules instantly upon modification, accelerating the development loop.
-- **Type Safety**: Built on standard Python type hints to ensure data integrity.
-- **Testing Infrastructure**: Built-in test runner to validate tool logic directly from the UI.
-- **Modern Stack**: Powered by FastAPI for high-performance backend serving and React/Vite for a responsive frontend experience.
+```
+$ pip install better-utils
+$ bu run app:app
+```
 
-## Technical Architecture
+Open http://127.0.0.1:8000 — the dashboard is embedded in the wheel; there is
+no Node toolchain, no static folder to ship, nothing to configure.
 
-### Backend
-- **Framework**: FastAPI (Python 3.9+)
-- **Core Components**:
-  - `Registry`: Manages tool discovery and lifecycle.
-  - `Parser`: Analyzes AST and type hints to generate schemas.
-  - `Executor`: Handles asynchronous execution and capturing of results.
-  - `Watcher`: Uses `watchdog` to monitor filesystem changes.
+## Writing tools
 
-### Frontend
-- **Framework**: React with TypeScript and Vite.
-- **Styling**: Modern CSS variables and responsive design principles.
-- **State Management**: Real-time updates for execution status and logs.
+Tools are plain functions. Everything is derived from the signature and the
+docstring (Google style):
+
+```python
+from typing import Annotated, Literal
+from pydantic import Field
+from better_utils import BetterUtils, File, ImageFile, ToolError
+
+app = BetterUtils(title="My Utils", tools_dir="tools")
+
+@app.tool
+def summarize(values: list[float]) -> dict:
+    """Basic descriptive statistics for a list of numbers.
+
+    Args:
+        values: Numbers to summarize (JSON array in the UI).
+    """
+    return {"count": len(values), "average": sum(values) / len(values)}
+
+@app.tool
+def fib(members: Annotated[int, Field(ge=1, le=64)] = 10) -> list[int]:
+    """First ``members`` Fibonacci numbers (the bound drives a UI slider)."""
+    ...
+```
+
+Supported argument types:
+
+| Annotation | UI control | Tool receives |
+| --- | --- | --- |
+| `str` | text input | `str` |
+| `int` / `float` (+ `Field(ge/le)` bounds) | number input or slider | `int` / `float` |
+| `bool` | checkbox | `bool` |
+| `Literal[...]` / `Enum` | select | the native value |
+| `list[T]` | JSON textarea | `list[T]` |
+| `dict` | JSON textarea | `dict` |
+| `File` | file input | raw `bytes` |
+| `ImageFile` | file input | `PIL.Image.Image` |
+
+Return anything JSON-serializable (rendered as JSON), a `str` (rendered as
+text), or a `PIL.Image.Image` (rendered in the dashboard from an artifact
+URL). Async tools work too — they run on the event loop instead of a worker
+thread.
+
+Raise `ToolError("clean message")` to abort with a user-facing error instead
+of a traceback.
+
+## Tool discovery
+
+- `BetterUtils(tools_dir="tools")` scans a directory (recursively). Every
+  `@tool` function is registered as `<file_stem>.<func_name>`; subfolders and
+  file stems become sidebar groups.
+- `BetterUtils` can also discover an importable package:
+  `app.discover("mypkg.tools")`.
+- `Router("text")` + `app.include_router(text)` registers functions defined
+  anywhere as `text.<func_name>`. Passing `prefix=""` at include time drops
+  the prefix.
+
+Duplicate ids are an error — two sources claiming `text.reverse_string` fail
+loudly instead of silently overwriting each other.
+
+## Running
+
+```
+bu run module:attribute            # e.g. bu run app:app
+bu run app:app --port 9000 --reload
+bu --version
+```
+
+- `--reload` (or `BETTER_UTILS_RELOAD=1`) watches the tools directories:
+  edits, additions, renames, and deletions hot-reload with a debounce; broken
+  modules surface in the dashboard's error banner instead of crashing the
+  server.
+- Every `POST /api/run/<id>` executes the tool in a worker thread (never the
+  event loop) with a hard timeout, so a slow tool cannot freeze the server.
+
+## Testing tools
+
+Put `tests/test_<file>.py` next to a tool file (or in `tools/tests/`) and use
+the test button in the dashboard, or:
+
+```
+curl -X POST http://127.0.0.1:8000/api/test/text.reverse_string
+```
+
+Tests run in a pytest **subprocess** with a timeout — never inside the server
+process. Statuses: `passed`, `failed`, `no_tests`, `error`.
+
+## HTTP API
+
+| Route | Purpose |
+| --- | --- |
+| `GET /api/tools` | `{tools: [...], errors: [...]}` — machine-readable catalog |
+| `POST /api/run/{tool_id}` | JSON body (or multipart when the tool takes files) |
+| `POST /api/test/{tool_id}` | run the tool's pytest subprocess |
+| `GET /api/artifacts/{name}` | image artifacts returned by tools |
+| `GET /health` | liveness + tool count |
+
+Successful runs return `{"ok": true, "type": "json"|"text"|"image", "data": ...,
+"image_url": ..., "elapsed_ms": ...}`. Errors: `404` `{"detail": ...}`,
+`422` `{"ok": false, "error": ..., "validation": [{"name", "msg"}...]}`,
+`400` (ToolError), `500` (with `traceback`), `504` (timeout) — all
+`{"ok": false, "error": ...}` shaped.
+
+## Interactive API docs
+
+Every tool is also a **typed, documented endpoint** — the run table above is
+the wire format, but you rarely need it. Point a browser at:
+
+| URL | What it is |
+| --- | --- |
+| `/docs` | Swagger UI — per-tool forms with **Try it out** |
+| `/redoc` | ReDoc — readable reference, grouped like the dashboard sidebar |
+| `/openapi.json` | the spec itself, usable with any OpenAPI client generator |
+
+Each tool gets its own `POST /api/run/<tool_id>` operation with a generated
+request schema: argument types, defaults, enum choices, numeric and string
+length bounds, descriptions from the docstring, and the response envelope.
+Validation happens server-side against that same schema, so what the docs
+show is exactly what the endpoint enforces. The `/docs` pages are generated
+from the live registry — new tools appear after a hot reload.
 
 ## Configuration
 
-Paths default to locations inside the project (or container image) and do not
-depend on the process working directory. They can be overridden with
-environment variables:
-
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `BETTER_UTILS_TOOLS_DIR` | `<project>/tools` | Directory scanned for tool modules. |
-| `BETTER_UTILS_STATIC_DIR` | `<project>/frontend/dist` | Built frontend assets. If missing, the API starts in API-only mode. |
+| `BETTER_UTILS_TOOLS_DIR` | — | directory auto-scanned at boot |
+| `BETTER_UTILS_STATIC_DIR` | `better_utils/static` | dashboard assets (wheel-bundled) |
+| `BETTER_UTILS_HOST` | `127.0.0.1` | bind address for `bu run` |
+| `BETTER_UTILS_PORT` | `8000` | port for `bu run` |
+| `BETTER_UTILS_TIMEOUT` | `60` | tool execution timeout (seconds) |
+| `BETTER_UTILS_RELOAD` | `0` | file watcher on/off |
+| `BETTER_UTILS_CORS_ORIGINS` | — | comma-separated allowed origins |
+| `BETTER_UTILS_LOG_LEVEL` | `info` | uvicorn log level |
 
-## Getting Started
-
-### Prerequisites
-- Python 3.8 or higher
-- Node.js 16+ (for frontend development)
-
-### Installation
-
-1. Clone the repository:
-   ```bash
-   git clone https://github.com/tanmayd-dev/better-utils
-   cd better-utils
-   ```
-
-2. Install backend dependencies:
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-3. Install frontend dependencies (optional for development):
-   ```bash
-   cd frontend
-   npm install
-   ```
-
-### Usage
-
-1. Build the frontend (optional; without it the API still runs, UI is disabled):
-   ```bash
-   cd frontend
-   npm run build
-   ```
-
-2. Start the application:
-   ```bash
-   python main.py
-   ```
-
-3. Access the dashboard at `http://localhost:8000`. Health checks are available
-   at `http://localhost:8000/health`.
-
-4. Create a new tool by adding a Python script to the `tools/` directory:
-   ```python
-   # tools/text_utils.py
-
-   def reverse_string(text: str) -> str:
-       """
-       Reverses the input text.
-       """
-       return text[::-1]
-   ```
-   The tool will automatically appear in the UI.
-
-## Docker
-
-The image builds the frontend in a Node stage and copies the artifacts into the
-Python runtime, so it is self-contained and does not need the repository or a
-build step on the host.
-
-```bash
-docker build -t better-utils .
-docker run --rm -p 8000:8000 better-utils
-```
-
-With Podman, replace `docker` with `podman`. The container runs as a non-root
-user and exposes port 8000. Remember the security warning above: publish the
-port only on a trusted network.
+`BetterUtils(...)` keyword arguments and CLI flags override the environment.
 
 ## Development
 
-- **Backend**: The `main.py` entry point serves the API, plus the static frontend when a build exists in `frontend/dist` (or `BETTER_UTILS_STATIC_DIR`).
-- **Frontend**: Source code is located in `frontend/src`. Run `npm run dev` in the `frontend` directory for a standalone development server.
+```
+git clone <repo> && cd better-utils
+uv venv .venv && uv pip install -e '.[dev]'
+.venv/bin/python -m pytest          # framework suite (tests/)
+.venv/bin/ruff check .
+./scripts/build_ui.sh               # build dashboard into better_utils/static
+.venv/bin/bu run example_app:app    # example server with 9 tools
+```
+
+The frontend lives in `frontend/` (React + Vite + Tailwind) and is embedded
+into `better_utils/static` by `scripts/build_ui.sh`; wheels built without it
+serve a placeholder page.
+
+## Docker
+
+```
+docker build -t better-utils .
+docker run -p 8000:8000 better-utils
+```
+
+Multi-stage build: Node compiles the dashboard, Python builds the wheel with
+it embedded, the runtime image installs the wheel and runs as non-root.
+
+## Security warning
+
+> **The tool runner executes arbitrary Python code.** Any Python file in the
+> tools directory is imported and run by the server, with the permissions of
+> the server process. There is no authentication, sandboxing, or resource
+> limiting. Never expose Better Utils directly to the internet; run it on a
+> trusted host and put authentication and network controls in front of it.
